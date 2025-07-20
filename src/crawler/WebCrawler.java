@@ -21,13 +21,13 @@ public class WebCrawler implements Runnable {
         try {
             if (depth > maxDepth) return;
 
-            Document document = manager.request(url);
+            Document document = manager.request(url, depth);
             if (document == null) return;
 
             for (Element link : document.select("a[href]")) {
                 String absLink = link.absUrl("href");
 
-                if (absLink.isEmpty() || manager.validateDomain(absLink)) continue;
+                if (absLink.isEmpty() || !manager.validateDomain(absLink)) continue;
 
                 manager.submitUrl(absLink, depth + 1);
             }

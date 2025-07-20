@@ -3,10 +3,13 @@ package crawler;
 import org.jsoup.Connection;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
 
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -24,6 +27,7 @@ public class CrawlerManager {
     private final RobotsTxtManager robotsTxtManager;
     private final int depth;
     private final String keyword;
+    private final List<PageInfo> pages;
 
     public CrawlerManager(int threadCount, String seed, int timeOutInSeconds, int depth, String keyword) {
         executor = Executors.newFixedThreadPool(threadCount);
@@ -37,25 +41,39 @@ public class CrawlerManager {
         this.timeOutInSeconds = timeOutInSeconds;
         this.depth = depth;
         this.keyword = keyword;
+        pages = new ArrayList<>();
     }
 
     public void submitUrl(String url, int depth) {
-        if (alreadyVisited(url)) return;
         if (!robotsTxtManager.isAllowed(url)) {
             System.out.println("Blocked by robots.txt: " + url);
             return;
         }
+        if (alreadyVisited(url)) return;
 
         taskCount.incrementAndGet();
         executor.submit(new WebCrawler(url, depth, this, depth));
     }
 
     public boolean alreadyVisited(String url) {
-        return !visited.add(url);
+        boolean hasVisited = !visited.add(url);
+        String title = getTitle(url);
+        if (title != null && !hasVisited) pages.add(new PageInfo(url, title));
+        return hasVisited;
+    }
+
+    private String getTitle(String url) {
+        try {
+            Connection connection = Jsoup.connect(url);
+            Document document = connection.get();
+
+            return document.title();
+        } catch (IOException _) {}
+        return null;
     }
 
     public boolean validateDomain(String url) {
-        return !extractDomain(url).endsWith(rootDomain);
+        return extractDomain(url).endsWith(rootDomain);
     }
 
     private String extractDomain(String url) {
@@ -68,15 +86,30 @@ public class CrawlerManager {
         }
     }
 
-    public Document request(String url) {
+    public Document request(String url, int currentDepth) {
         try {
             Connection connection = Jsoup.connect(url);
             Document document = connection.get();
 
-            if (!document.title().toLowerCase().contains(keyword))
-                return null;
+            if (connection.response().statusCode() != 200) return null;
 
-            if (connection.response().statusCode() == 200) {
+            boolean containsKeyword = currentDepth == 0 || document.title().toLowerCase().contains(keyword);
+
+            if (!containsKeyword &&
+                document.body().text().toLowerCase().contains(keyword))
+                containsKeyword = true;
+
+            if (!containsKeyword) {
+                for (Element meta : document.select("meta")) {
+                    String content = meta.attr("content");
+                    if (content.toLowerCase().contains(keyword)) {
+                        containsKeyword = true;
+                        break;
+                    }
+                }
+            }
+
+            if (containsKeyword) {
                 System.out.println("Visiting: " + url);
                 System.out.println("Title: " + document.title());
                 return document;
@@ -107,5 +140,16 @@ public class CrawlerManager {
                 System.out.println("Crawling complete. Visited " + visited.size() + " sites.");
             }
         }, timeOutInSeconds, TimeUnit.SECONDS);
+    }
+
+    public List<PageInfo> getPages() { return pages; }
+
+    public void awaitTermination() {
+        try {
+            executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            System.err.println("Crawler interrupted during shutdown");
+        }
     }
 }
